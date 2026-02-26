@@ -5,9 +5,24 @@ import sys
 import numpy as np
 
 
+def extract_base_name(sounding_name):
+    """
+    10_sounding_56_0000.wav
+    10_sounding_56_00002.wav
+    → 10_sounding_56
+    """
+    return (
+        sounding_name
+        .replace("_0000.wav", "")
+        .replace("_00002.wav", "")
+    )
+
+
 def plot_cycles_from_excel():
     try:
-        # ===== Lấy thư mục =====
+        # =============================
+        # LẤY THƯ MỤC CHẠY FILE
+        # =============================
         if getattr(sys, 'frozen', False):
             base_dir = os.path.dirname(sys.executable)
         else:
@@ -20,89 +35,148 @@ def plot_cycles_from_excel():
             input("Nhấn Enter để thoát...")
             return
 
-        # ===== Tạo folder picture =====
         picture_dir = os.path.join(base_dir, "picture")
         os.makedirs(picture_dir, exist_ok=True)
 
-        df = pd.read_excel(file_path)
+        # =============================
+        # ĐỌC TẤT CẢ SHEET
+        # =============================
+        excel_data = pd.read_excel(file_path, sheet_name=None)
 
-        required_columns = {"sounding", "time_mark", "hz"}
-        if not required_columns.issubset(df.columns):
-            print("❌ File Excel không đúng định dạng!")
-            input("Nhấn Enter để thoát...")
-            return
+        for sheet_name, df in excel_data.items():
 
-        print("Tổng số dòng:", len(df))
+            print(f"\n📂 Đang xử lý sheet: {sheet_name}")
 
-        all_cycles = []
+            required_columns = {"sounding", "time_marker", "hz"}
+            if not required_columns.issubset(df.columns):
+                print(f"❌ Sheet {sheet_name} sai format")
+                continue
 
-        grouped = df.groupby("sounding")
+            sheet_folder = os.path.join(picture_dir, sheet_name)
+            os.makedirs(sheet_folder, exist_ok=True)
 
-        for sound_name, group in grouped:
+            # =============================
+            # GROUP THEO BASE SOUNDING
+            # =============================
+            df["base_name"] = df["sounding"].apply(extract_base_name)
 
-            group = group.reset_index(drop=True)
+            grouped_base = df.groupby("base_name")
 
-            # ===== TÍNH Z-SCORE CHO TOÀN SPEAKER =====
-            speaker_mean = group["hz"].mean()
-            speaker_std = group["hz"].std()
+            all_0000 = []
+            all_00002 = []
 
-            print(f"\nSpeaker: {sound_name}")
-            print("Mean:", speaker_mean)
-            print("Std:", speaker_std)
+            percent_time = list(range(10, 101, 10))
 
-            total_rows = len(group)
-            num_cycles = total_rows // 10
+            for base_name, base_group in grouped_base:
 
-            for i in range(num_cycles):
+                # Tách riêng 2 loại
+                group_0000 = base_group[
+                    base_group["sounding"].str.endswith("0000.wav")
+                ]
 
-                start = i * 10
-                end = start + 10
+                group_00002 = base_group[
+                    base_group["sounding"].str.endswith("00002.wav")
+                ]
 
-                cycle_df = group.iloc[start:end]
-                cycle_dict = {}
-
-                for _, row in cycle_df.iterrows():
-                    t = row["time_mark"]
-                    hz = row["hz"]
-
-                    if pd.notna(hz) and speaker_std != 0:
-                        z = (hz - speaker_mean) / speaker_std
-                        cycle_dict[t] = z
-
-                if not cycle_dict:
+                if group_0000.empty or group_00002.empty:
                     continue
 
-                all_cycles.append(cycle_dict)
+                # Z-score tính theo toàn bộ base_group
+                speaker_mean = base_group["hz"].mean()
+                speaker_std = base_group["hz"].std()
 
-                # ===== VẼ TỪNG CYCLE =====
-                plt.figure()
+                if speaker_std == 0:
+                    continue
 
-                # Normalize time thành %
-                t_vals = sorted(cycle_dict.keys())
-                percent_time = [int(t * 10) for t in t_vals]  # 1→10%, 2→20%...
+                def get_z_list(group):
+                    group = group.sort_values("time_marker")
+                    z_vals = []
+                    for _, row in group.iterrows():
+                        z = (row["hz"] - speaker_mean) / speaker_std
+                        z_vals.append(z)
+                    return z_vals if len(z_vals) == 10 else None
 
-                z_vals = [cycle_dict[t] for t in t_vals]
+                z_0000 = get_z_list(group_0000)
+                z_00002 = get_z_list(group_00002)
 
-                plt.plot(percent_time, z_vals, marker='o')
+                if z_0000 is None or z_00002 is None:
+                    continue
 
-                plt.xlim(10, 100)
-                plt.xticks(range(10, 101, 10),
-                           [f"{x}%" for x in range(10, 101, 10)])
+                all_0000.append(z_0000)
+                all_00002.append(z_00002)
 
-                plt.ylim(-3, 3)
+                # =============================
+                # VẼ ẢNH CHO TỪNG SOUNDING
+                # =============================
+                fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
-                plt.xlabel("Time Normalized (%)")
-                plt.ylabel("Z-score (F0)")
-                plt.title(f"{sound_name} - Cycle {i+1}")
-                plt.grid(True)
+                axes[0].plot(percent_time, z_0000, marker='o')
+                axes[0].set_title("0000.wav")
+                axes[0].set_ylim(-3, 3)
+                axes[0].set_xticks([20, 40, 60, 80, 100])
+                axes[0].set_xticklabels(["20%", "40%", "60%", "80%", "100%"])
+                axes[0].grid(True)
+
+                axes[1].plot(percent_time, z_00002, marker='o')
+                axes[1].set_title("00002.wav")
+                axes[1].set_ylim(-3, 3)
+                axes[1].set_xticks([20, 40, 60, 80, 100])
+                axes[1].set_xticklabels(["20%", "40%", "60%", "80%", "100%"])
+                axes[1].grid(True)
+
+                fig.suptitle(base_name)
                 plt.tight_layout()
 
-                save_path = os.path.join(
-                    picture_dir, f"{sound_name}_cycle_{i+1}.png")
+                save_path = os.path.join(sheet_folder, f"{base_name}.png")
                 plt.savefig(save_path, dpi=300)
                 plt.close()
 
-        print("\n✅ Đã chuẩn hóa theo Z-score và lưu ảnh vào folder picture")
+            # =============================
+            # OVERLAY ALL
+            # =============================
+            if all_0000 and all_00002:
+
+                fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+                for cycle in all_0000:
+                    axes[0].plot(percent_time, cycle, alpha=0.4)
+                axes[0].set_title("Overlay 0000.wav")
+                axes[0].set_ylim(-3, 3)
+                axes[0].grid(True)
+
+                for cycle in all_00002:
+                    axes[1].plot(percent_time, cycle, alpha=0.4)
+                axes[1].set_title("Overlay 00002.wav")
+                axes[1].set_ylim(-3, 3)
+                axes[1].grid(True)
+
+                plt.tight_layout()
+                plt.savefig(os.path.join(sheet_folder, "all_cycles.png"), dpi=300)
+                plt.close()
+
+                # =============================
+                # MEAN CONTOUR
+                # =============================
+                mean_0000 = np.nanmean(np.array(all_0000), axis=0)
+                mean_00002 = np.nanmean(np.array(all_00002), axis=0)
+
+                fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+                axes[0].plot(percent_time, mean_0000, marker='o')
+                axes[0].set_title("Mean 0000.wav")
+                axes[0].set_ylim(-3, 3)
+                axes[0].grid(True)
+
+                axes[1].plot(percent_time, mean_00002, marker='o')
+                axes[1].set_title("Mean 00002.wav")
+                axes[1].set_ylim(-3, 3)
+                axes[1].grid(True)
+
+                plt.tight_layout()
+                plt.savefig(os.path.join(sheet_folder, "mean.png"), dpi=300)
+                plt.close()
+
+        print("\n✅ Hoàn thành xử lý toàn bộ sheet")
 
     except Exception as e:
         print("❌ Lỗi:", e)
